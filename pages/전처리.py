@@ -85,6 +85,83 @@ def parse_season_tabs(soup):
     return pd.DataFrame(rows)
 
 
+# ---------- 새로 추가: 차트 파싱 ----------
+OUTER_NAMES = ["바깥_좌상", "바깥_우상", "바깥_좌하", "바깥_우하"]
+INNER_NAMES = [
+    "안쪽_1행1열", "안쪽_1행2열", "안쪽_1행3열",
+    "안쪽_2행1열", "안쪽_2행2열", "안쪽_2행3열",
+    "안쪽_3행1열", "안쪽_3행2열", "안쪽_3행3열",
+]
+
+
+def get_step(el):
+    """클래스 이름에서 색상 단계(step1~step5) 숫자를 꺼낸다."""
+    for c in el.get("class", []):
+        if "SquareChart_step" in c:
+            digits = "".join(ch for ch in c.split("SquareChart_step")[1] if ch.isdigit())
+            return int(digits) if digits else None
+    return None
+
+
+def parse_square_chart(chart):
+    """SquareChart 하나(HOT&COLD 또는 삼진)를 표로 변환"""
+    rows = []
+    outers = chart.select('[class*="SquareChart_outer"]')
+    inners = chart.select('[class*="SquareChart_inner__"]')
+
+    for name, el in zip(OUTER_NAMES, outers):
+        rows.append(
+            {
+                "구역": name,
+                "값": text(el.select_one('[class*="SquareChart_average"]')),
+                "색상단계": get_step(el),
+            }
+        )
+    for name, el in zip(INNER_NAMES, inners):
+        rows.append(
+            {
+                "구역": name,
+                "값": text(el.select_one('[class*="SquareChart_average"]')),
+                "색상단계": get_step(el),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def parse_charts(soup, prefix=""):
+    """차트 영역의 HOT&COLD / 삼진 / 타구 분포도를 모두 추출"""
+    result = {}
+
+    # 제목(h4)을 기준으로 각 차트 그룹을 찾는다
+    for group in soup.select('[class*="StatusChart_chart_group"]'):
+        title = text(group.select_one('[class*="StatusChart_sub_title"]'))
+        if not title:
+            continue
+
+        if group.select_one('[class*="SquareChart_chart_box"]'):
+            df = parse_square_chart(group)
+            if not df.empty:
+                result[f"{prefix}차트_{title}"] = df
+
+        elif group.select_one('[class*="GroundChart_chart_area"]'):
+            rows = []
+            for label, key in [
+                ("레프트", "position_lf"),
+                ("센터", "position_cf"),
+                ("라이트", "position_rf"),
+            ]:
+                el = group.select_one(f'[class*="GroundChart_{key}"]')
+                if el:
+                    # 안에 있는 blind 텍스트(레프트 필더 등)를 제외하고 숫자만 가져옴
+                    for b in el.select(".blind"):
+                        b.extract()
+                    rows.append({"방향": label, "비율": text(el)})
+            if rows:
+                result[f"{prefix}차트_{title}"] = pd.DataFrame(rows)
+
+    return result
+
+
 def parse_html(html, prefix=""):
     soup = BeautifulSoup(html, "html.parser")
     name = get_player_name(soup)
@@ -99,6 +176,9 @@ def parse_html(html, prefix=""):
     for key, df in extras.items():
         if not df.empty:
             data[key] = df
+
+    # 차트 데이터 추가
+    data.update(parse_charts(soup, prefix))
     return name, data
 
 
@@ -153,7 +233,7 @@ def make_zip(tables):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, df in tables.items():
-            safe = name.replace("/", "_").replace(" ", "_")
+            safe = name.replace("/", "_").replace(" ", "_").replace("&", "and")
             z.writestr(f"{safe}.csv", to_csv_bytes(df))
     return buf.getvalue()
 
@@ -221,10 +301,11 @@ if st.session_state.get("tables"):
     for name, df in tables.items():
         st.subheader(name)
         st.dataframe(df, use_container_width=True)
+        safe_name = name.replace(" ", "_").replace("&", "and")
         st.download_button(
             f"⬇️ {name}.csv",
             data=to_csv_bytes(df),
-            file_name=f"{player}_{name}.csv".replace(" ", "_"),
+            file_name=f"{player}_{safe_name}.csv",
             mime="text/csv",
             key=f"dl_{name}",
         )
