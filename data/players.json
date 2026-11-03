@@ -1,0 +1,79 @@
+{
+  "season": 2026,
+  "snapshot": "MyKBO Stats (비공식) 2026-10-14 기준",
+  "notes": [
+    "타자: 구단별 OPS 상위 2명(규정타석 이상). 키움은 사용자 결정에 따라 대표 타자 없음.",
+    "투수: 구단별 평균자책점/탈삼진 상위(규정이닝 이상). 안우진·김광현·아빌라·류현진·왕옌청·소형준은 2026 기록을 확인하지 못해 verified=false.",
+    "ref 값은 화면 표시용 참고 기록이며 분석 계산에는 쓰이지 않습니다(데모 데이터 생성에는 쓰임)."
+  ],
+  "teams": [
+    {"code": "KIA", "name": "KIA 타이거즈",
+     "batters": [
+       {"name": "김도영", "ref": {"avg": 0.308, "obp": 0.413, "slg": 0.647, "ops": 1.060}},
+       {"name": "나성범", "ref": {"avg": 0.303, "obp": 0.379, "slg": 0.541, "ops": 0.920}}],
+     "pitchers": [
+       {"name": "올러", "ref": {"era": 3.13, "ip": 178.0}},
+       {"name": "네일", "ref": {"era": 3.49, "ip": 183.0}}]},
+    {"code": "SAMSUNG", "name": "삼성 라이온즈",
+     "batters": [
+       {"name": "구자욱", "ref": {"avg": 0.371, "obp": 0.458, "slg": 0.581, "ops": 1.039}},
+       {"name": "디아즈", "ref": {"avg": 0.305, "obp": 0.384, "slg": 0.510, "ops": 0.894}}],
+     "pitchers": [
+       {"name": "후라도", "ref": {"era": 3.54, "ip": 150.0}},
+       {"name": "원태인", "ref": {"era": 4.52, "ip": 145.33}}]},
+    {"code": "LG", "name": "LG 트윈스",
+     "batters": [
+       {"name": "오스틴", "ref": {"avg": 0.331, "obp": 0.427, "slg": 0.635, "ops": 1.062}},
+       {"name": "박해민", "ref": {"avg": 0.288, "obp": 0.368, "slg": 0.367, "ops": 0.735}}],
+     "pitchers": [
+       {"name": "톨허스트", "ref": {"era": 4.24, "ip": 163.33}},
+       {"name": "임찬규", "ref": {"era": 4.46, "ip": 169.67}}]},
+    {"code": "DOOSAN", "name": "두산 베어스",
+     "batters": [
+       {"name": "양의지", "ref": {"avg": 0.249, "obp": 0.354, "slg": 0.443, "ops": 0.797}},
+       {"name": "김민석", "ref": {"avg": 0.310, "obp": 0.391, "slg": 0.404, "ops": 0.795}}],
+     "pitchers": [
+       {"name": "곽빈", "ref": {"era": 2.24, "ip": 161.0}},
+       {"name": "최민석", "ref": {"era": 3.20, "ip": 146.33}}]},
+    {"code": "KT", "name": "KT 위즈",
+     "batters": [
+       {"name": "힐리어드", "ref": {"avg": 0.304, "obp": 0.374, "slg": 0.593, "ops": 0.967}},
+       {"name": "최원준", "ref": {"avg": 0.356, "obp": 0.434, "slg": 0.485, "ops": 0.919}}],
+     "pitchers": [
+       {"name": "고영표", "ref": {"era": 3.28, "ip": 172.67}},
+       {"name": "소형준", "verified": false, "note": "2026 규정이닝 순위에서 확인되지 않음(2025까지의 지식으로 넣은 후보)"}]},
+    {"code": "SSG", "name": "SSG 랜더스",
+     "batters": [
+       {"name": "박성한", "ref": {"avg": 0.330, "obp": 0.429, "slg": 0.425, "ops": 0.854}},
+       {"name": "에레디아", "ref": {"avg": 0.283, "obp": 0.338, "slg": 0.468, "ops": 0.806}}],
+     "pitchers": [
+       {"name": "김광현", "verified": false, "note": "직접 지정 — 2026 기록 미확인"},
+       {"name": "아빌라", "verified": false, "note": "직접 지정 — 2026 기록 미확인"}]},
+    {"code": "LOTTE", "name": "롯데 자이언츠",
+     "batters": [
+       {"name": "레이예스", "ref": {"avg": 0.363, "obp": 0.410, "slg": 0.527, "ops": 0.937}},
+       {"name": "한동희", "ref": {"avg": 0.306, "obp": 0.371, "slg": 0.544, "ops": 0.915}}],
+     "pitchers": [
+       {"name": "김진욱", "ref": {"era": 4.12, "ip": 144.33}},
+       {"name": "나균안", "ref": {"era": 4.27, "ip": 149.67}}]},
+    {"code": "HANWHA", "name": "한화 이글스",
+     "batters": [
+       {"name": "페라자", "ref": {"avg": 0.289, "obp": 0.408, "slg": 0.493, "ops": 0.901}},
+       {"name": "강백호", "ref": {"avg": 0.285, "obp": 0.353, "slg": 0.530, "ops": 0.883}}],
+     "pitchers": [
+       {"name": "류현진", "verified": false, "note": "올스타전 출전 확인, 시즌 기록은 규정이닝 미달로 미확인"},
+       {"name": "왕옌청", "verified": false, "note": "2026 기록 미확인"}]},
+    {"code": "NC", "name": "NC 다이노스",
+     "batters": [
+       {"name": "박건우", "ref": {"avg": 0.301, "obp": 0.375, "slg": 0.488, "ops": 0.863}},
+       {"name": "박민우", "ref": {"avg": 0.320, "obp": 0.405, "slg": 0.434, "ops": 0.839}}],
+     "pitchers": [
+       {"name": "구창모", "ref": {"era": 4.03, "ip": 163.0}},
+       {"name": "라일리", "note": "탈삼진 162개로 리그 5위(평균자책점 순위표에는 없음)"}]},
+    {"code": "KIWOOM", "name": "키움 히어로즈",
+     "batters": [],
+     "pitchers": [
+       {"name": "알칸타라", "ref": {"era": 3.87, "ip": 155.67}},
+       {"name": "안우진", "verified": false, "note": "직접 지정 — 2026 기록 미확인"}]}
+  ]
+}
