@@ -1,290 +1,550 @@
-"""Streamlit 앱: KBO 대표 선수 히트맵 · 잠실야구장 에디션
-
-실행:  streamlit run app.py
-"""
-from __future__ import annotations
-
-import hashlib
-import os
-from pathlib import Path
+import io
+import re
+import zipfile
 
 import matplotlib
-
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from bs4 import BeautifulSoup
+from matplotlib.patches import Rectangle, Wedge
 
-import streamlit as st  # noqa: E402
-
-from kbo_heatmap import classify as K  # noqa: E402
-from kbo_heatmap import config as C  # noqa: E402
-from kbo_heatmap import plots, render  # noqa: E402
-from kbo_heatmap.data import load_pitches_bytes, load_players, make_demo  # noqa: E402
-from kbo_heatmap.tables import summary_tables  # noqa: E402
-
-st.set_page_config(page_title="KBO 대표 선수 히트맵 · 잠실야구장", page_icon="⚾", layout="wide")
-
-TEMPLATE_PATH = C.REPO_ROOT / "data" / "pitches_template.csv"
+st.set_page_config(page_title="네이버 선수 기록 분석기", page_icon="⚾", layout="wide")
 
 
-# ============================================================ 캐시된 계산
+# ---------------------------------------------------------------
+# 한글 폰트 (캐시해서 한 번만 실행)
+# ---------------------------------------------------------------
 @st.cache_resource
-def get_teams():
-    return load_players()
+def setup_korean_font():
+    from matplotlib import font_manager
+
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    for name in ["NanumGothic", "NanumBarunGothic", "Malgun Gothic", "AppleGothic"]:
+        if name in available:
+            plt.rcParams["font.family"] = name
+            break
+    plt.rcParams["axes.unicode_minus"] = False
+    return True
 
 
-@st.cache_resource
-def init_font():
-    return plots.setup_font(os.environ.get("KBO_FONT_PATH") or None)
+setup_korean_font()
 
 
-@st.cache_data(show_spinner="데모 데이터를 만드는 중…")
-def demo_df(seed: int = 2026):
-    return make_demo(get_teams(), seed=seed)
+# ---------------------------------------------------------------
+# 1) HTML 파싱
+# ---------------------------------------------------------------
+def text(el):
+    return el.get_text(strip=True) if el else ""
 
 
-@st.cache_data(show_spinner="CSV를 검증하는 중…")
-def parse_upload(raw: bytes):
-    return load_pitches_bytes(raw)
+def get_player_name(soup):
+    el = soup.select_one('[class*="PlayerEndHeader_player__"]')
+    return text(el) or "player"
 
 
-@st.cache_data(show_spinner=False)
-def hero(demo: bool) -> bytes:
-    return render.hero_png(demo=demo)
-
-
-# 앞에 _가 붙은 인자(_df)는 캐시 키 계산에서 제외됩니다. 대신 data_key로 데이터를 구분합니다.
-@st.cache_data(show_spinner="히트맵을 그리는 중…", max_entries=256)
-def batter_view(data_key: str, _df, name: str, team_name: str, grid: int, iso: float, demo: bool):
-    return render.batter_png(_df, name, team_name, grid, iso, demo)
-
-
-@st.cache_data(show_spinner="히트맵을 그리는 중…", max_entries=256)
-def pitcher_view(data_key: str, _df, name: str, team_name: str, grid: int, demo: bool):
-    return render.pitcher_png(_df, name, team_name, grid, demo)
-
-
-@st.cache_data(show_spinner="분류 모델을 학습하는 중… (몇 초 걸려요)", max_entries=8)
-def classification(data_key: str, _df):
-    # 웹앱에서는 속도를 위해 교차검증을 생략하고 나무 수/표본 수를 줄입니다.
-    return K.train_and_evaluate(_df, cv=0, rf_trees=100, max_rows=60_000)
-
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def classification_outputs(data_key: str, _result, demo: bool):
-    return (render.evaluation_png(_result, demo), render.probability_map_png(_result, demo),
-            K.build_report(_result, demo))
-
-
-@st.cache_data(show_spinner=False, max_entries=64)
-def tables(data_key: str, _df, grid: int, iso: float):
-    return summary_tables(_df, get_teams(), grid, iso)
-
-
-# ============================================================ 사이드바
-def sidebar():
-    """(데이터프레임, data_key, demo 여부, 선택한 설정들)"""
-    sb = st.sidebar
-    sb.header("⚾ 설정")
-
-    source = sb.radio("데이터", ["DEMO (가짜 데이터)", "내 CSV 업로드"], key="source")
-    df, key, demo = None, "demo", True
-    if source.startswith("내"):
-        up = sb.file_uploader("투구 데이터 CSV", type=["csv"], key="upload")
-        if up is None:
-            sb.info("CSV를 올리기 전까지는 DEMO 데이터를 보여드려요.")
+def parse_tables(soup, prefix=""):
+    result = {}
+    for i, table in enumerate(soup.find_all("table"), start=1):
+        header = [text(th) for th in table.select("thead th")]
+        rows = []
+        for tr in table.select("tbody tr"):
+            cells = [text(c) for c in tr.find_all(["th", "td"])]
+            if cells:
+                rows.append(cells)
+        if not rows:
+            continue
+        if len(header) == len(rows[0]):
+            df = pd.DataFrame(rows, columns=header)
         else:
-            try:
-                raw = up.getvalue()
-                df = parse_upload(raw)
-                key, demo = "up-" + hashlib.md5(raw).hexdigest(), False
-                sb.success(f"불러옴: {len(df):,}구")
-            except Exception as e:  # 형식 오류는 앱을 멈추지 않고 안내만 한다
-                sb.error(f"CSV를 읽지 못했어요: {e}")
-                sb.caption("형식은 '사용법' 탭에서 확인하세요. 그동안 DEMO 데이터를 보여드려요.")
-    if df is None:
-        df, key, demo = demo_df(), "demo", True
-
-    grid = sb.radio("히트맵 분할", list(C.SUPPORTED_GRIDS), index=list(C.SUPPORTED_GRIDS).index(C.DEFAULT_GRID),
-                    format_func=lambda g: f"{g}×{g}", key="grid", horizontal=True)
-    iso = round(sb.slider("장타형 기준 (ISO ≥)", 0.05, 0.30, float(C.ISO_THRESHOLD), 0.005, key="iso"), 3)
-
-    sb.divider()
-    teams = get_teams()
-    by_code = {t.code: t for t in teams}
-    code = sb.selectbox("구단", list(by_code), format_func=lambda c: by_code[c].name, key="team")
-    role = sb.radio("선수 구분", ["타자", "투수"], key="role", horizontal=True)
-
-    font = init_font()
-    if not font:
-        sb.warning("한글 폰트를 찾지 못했어요. 그림의 한글이 깨질 수 있어요. "
-                   "저장소의 packages.txt(fonts-nanum)를 확인하세요.")
-    return df, key, demo, grid, iso, by_code[code], role
+            df = pd.DataFrame(rows)
+        title_tag = table.find_previous(["h3", "h4"])
+        title = text(title_tag) or "표"
+        result[f"{prefix}{i}_{title}"] = df
+    return result
 
 
-# ============================================================ 본문
-def _label(player, has_data: bool) -> str:
-    tag = "" if has_data else "  (데이터 없음)"
-    return f"{player.name}{'' if player.verified else ' ⚠'}{tag}"
+def parse_vs_team(soup):
+    rows = []
+    for li in soup.select('li[class*="BarChart_item"]'):
+        team = text(li.select_one('[class*="team_name"]'))
+        value = text(li.select_one('[class*="number"]'))
+        if team:
+            rows.append({"팀": team, "값": value})
+    return pd.DataFrame(rows)
 
 
-def show_batter(df, key, demo, grid, iso, team, player):
-    png, s = batter_view(key, df, player.name, team.name, grid, iso, demo)
-    if s is None:
-        st.info(f"'{player.name}'의 타석 결과(pa_result)가 데이터에 없어 타자 분석을 할 수 없어요.")
-        return
-    cols = st.columns(5)
-    cols[0].metric("타율", f"{s['avg']:.3f}")
-    cols[1].metric("장타율", f"{s['slg']:.3f}")
-    cols[2].metric("ISO", f"{s['iso']:.3f}")
-    cols[3].metric("유형", s["type"])
-    cols[4].metric("타수", f"{s['ab']}")
-    st.markdown(f"**강한 존** {s['strong_zone']}　·　**약한 존** {s['weak_zone']}　_(포수 시점)_")
-    if not s["sample_ok"]:
-        st.warning(f"타수가 {s['ab']}로 적어서(기준 {C.MIN_AB_CLASSIFY}) 유형 판정은 참고용이에요.")
-    if player.ref:
-        st.caption(f"참고 시즌 기록: 타율 {player.ref.get('avg', '-')} · OPS {player.ref.get('ops', '-')} "
-                   "(공개 순위표, 위 계산과는 별개)")
-    st.image(png)
+def parse_ranking_summary(soup):
+    rows = []
+    for li in soup.select('li[class*="RankingSummary_item"]'):
+        rows.append(
+            {
+                "항목": text(li.select_one('[class*="RankingSummary_title"]')),
+                "순위": text(li.select_one('[class*="RankingSummary_ranking"]')),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def show_pitcher(df, key, demo, grid, team, player):
-    png, s = pitcher_view(key, df, player.name, team.name, grid, demo)
-    if s is None:
-        st.info(f"'{player.name}'의 투구가 데이터에 없어요.")
-        return
-    cols = st.columns(4)
-    cols[0].metric("투구 수", f"{s['pitches']:,}")
-    cols[1].metric("직구 비율", f"{s['fb_share']:.0%}")
-    cols[2].metric("직구 스트라이크율", f"{s['fb_strike']:.0%}")
-    cols[3].metric("변화구 스트라이크율", f"{s['br_strike']:.0%}")
-    st.markdown(f"**직구 잘 넣는 존** {s['fb_best_zone']}　·　**변화구 잘 넣는 존** {s['br_best_zone']}　_(포수 시점)_")
-    if player.ref.get("era") is not None:
-        st.caption(f"참고 시즌 기록: 평균자책점 {player.ref['era']:.2f} (공개 순위표, 위 계산과는 별개)")
-    st.image(png)
+def parse_season_tabs(soup):
+    rows = []
+    for item in soup.select('[class*="RecordTab_tab_item"]'):
+        rows.append(
+            {
+                "항목": text(item.select_one('[class*="RecordTab_title"]')),
+                "기록": text(item.select_one('[class*="RecordTab_record"]')),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def tab_players(df, key, demo, grid, iso, team, role):
-    players = team.batters if role == "타자" else team.pitchers
-    if not players:
-        st.info(f"{team.name}은 설정 파일(data/players.json)에 대표 {role}가 없어요.")
-        return
-    names_with_data = set(df["batter" if role == "타자" else "pitcher"].unique())
-    by_name = {p.name: p for p in players}
-    name = st.selectbox(f"{role} 선택", list(by_name), key=f"player_{team.code}_{role}",
-                        format_func=lambda n: _label(by_name[n], n in names_with_data))
-    player = by_name[name]
-    if not player.verified:
-        st.caption(f"⚠ {player.note or '2026 기록을 확인하지 못한 선수예요.'}")
+OUTER_NAMES = ["바깥_좌상", "바깥_우상", "바깥_좌하", "바깥_우하"]
+INNER_NAMES = [f"안쪽_{r}행{c}열" for r in (1, 2, 3) for c in (1, 2, 3)]
+
+
+def get_step(el):
+    for c in el.get("class", []):
+        if "SquareChart_step" in c:
+            digits = "".join(ch for ch in c.split("SquareChart_step")[1] if ch.isdigit())
+            return int(digits) if digits else None
+    return None
+
+
+def parse_square_chart(chart):
+    rows = []
+    outers = chart.select('[class*="SquareChart_outer"]')
+    inners = chart.select('[class*="SquareChart_inner__"]')
+    for names, els in ((OUTER_NAMES, outers), (INNER_NAMES, inners)):
+        for name, el in zip(names, els):
+            rows.append(
+                {
+                    "구역": name,
+                    "값": text(el.select_one('[class*="SquareChart_average"]')),
+                    "색상단계": get_step(el),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def parse_charts(soup, prefix=""):
+    result = {}
+    for group in soup.select('[class*="StatusChart_chart_group"]'):
+        title = text(group.select_one('[class*="StatusChart_sub_title"]'))
+        if not title:
+            continue
+        if group.select_one('[class*="SquareChart_chart_box"]'):
+            df = parse_square_chart(group)
+            if not df.empty:
+                result[f"{prefix}차트_{title}"] = df
+        elif group.select_one('[class*="GroundChart_chart_area"]'):
+            rows = []
+            for label, key in [
+                ("레프트", "position_lf"),
+                ("센터", "position_cf"),
+                ("라이트", "position_rf"),
+            ]:
+                el = group.select_one(f'[class*="GroundChart_{key}"]')
+                if el:
+                    for b in el.select(".blind"):
+                        b.extract()
+                    rows.append({"방향": label, "비율": text(el)})
+            if rows:
+                result[f"{prefix}차트_{title}"] = pd.DataFrame(rows)
+    return result
+
+
+def parse_legends(soup, prefix=""):
+    result = {}
+    seen = set()
+    n = 0
+    for item in soup.select('[class*="DonutChartLegend_legend_item"]'):
+        parent = item.parent
+        if id(parent) in seen:
+            continue
+        seen.add(id(parent))
+        rows = []
+        for it in parent.select('[class*="DonutChartLegend_legend_item"]'):
+            rows.append(
+                {
+                    "항목": text(it.select_one('[class*="DonutChartLegend_label"]')),
+                    "비율": text(it.select_one('[class*="DonutChartLegend_percentage"]')),
+                    "값": text(it.select_one('[class*="DonutChartLegend_value"]')),
+                }
+            )
+        rows = [r for r in rows if r["항목"]]
+        if rows:
+            n += 1
+            title_tag = parent.find_previous(["h3", "h4"])
+            title = text(title_tag) or f"도넛{n}"
+            result[f"{prefix}비율_{n}_{title}"] = pd.DataFrame(rows)
+    return result
+
+
+def parse_html(html, prefix=""):
+    soup = BeautifulSoup(html, "html.parser")
+    name = get_player_name(soup)
+    data = parse_tables(soup, prefix)
+    extras = {
+        f"{prefix}시즌_요약": parse_season_tabs(soup),
+        f"{prefix}주요_랭킹": parse_ranking_summary(soup),
+        f"{prefix}VS팀": parse_vs_team(soup),
+    }
+    for key, df in extras.items():
+        if not df.empty:
+            data[key] = df
+    data.update(parse_charts(soup, prefix))
+    data.update(parse_legends(soup, prefix))
+    return name, data
+
+
+# ---------------------------------------------------------------
+# 2) CSV / ZIP
+# ---------------------------------------------------------------
+def to_csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def safe_name(s):
+    return s.replace("/", "_").replace(" ", "_").replace("&", "and")
+
+
+def make_zip(players):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for pname, tables in players.items():
+            for tname, df in tables.items():
+                z.writestr(f"{safe_name(pname)}/{safe_name(tname)}.csv", to_csv_bytes(df))
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------
+# 3) 그래프 함수
+# ---------------------------------------------------------------
+def to_number(s):
+    s = str(s).replace("%", "").replace(",", "").strip()
+    m = re.fullmatch(r"(\d+)\s+(\d)/(\d)", s)
+    if m:
+        return int(m.group(1)) + int(m.group(2)) / int(m.group(3))
     try:
-        if role == "타자":
-            show_batter(df, key, demo, grid, iso, team, player)
+        return float(s)
+    except ValueError:
+        return np.nan
+
+
+def draw_zone_heatmap(df, title, cmap="coolwarm", fmt="{:.3f}"):
+    vals = {r["구역"]: to_number(r["값"]) for _, r in df.iterrows()}
+    all_vals = [v for v in vals.values() if not np.isnan(v)]
+    if not all_vals:
+        return None
+    norm = plt.Normalize(min(all_vals), max(all_vals))
+    colormap = plt.get_cmap(cmap)
+
+    def color(v):
+        return colormap(norm(v)) if not np.isnan(v) else "lightgray"
+
+    def label(v):
+        return fmt.format(v) if not np.isnan(v) else "-"
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    outer_pos = {"바깥_좌상": (0, 2), "바깥_우상": (2, 2), "바깥_좌하": (0, 0), "바깥_우하": (2, 0)}
+    for name, (x, y) in outer_pos.items():
+        v = vals.get(name, np.nan)
+        ax.add_patch(Rectangle((x, y), 2, 2, facecolor=color(v), edgecolor="white", lw=2))
+        tx = x + 0.3 if x == 0 else x + 1.7
+        ty = y + 1.7 if y == 2 else y + 0.3
+        ax.text(tx, ty, label(v), ha="left" if x == 0 else "right",
+                va="center", fontsize=11, fontweight="bold")
+
+    cell = 2 / 3
+    start = 2 - 3 * cell / 2
+    for i in range(3):
+        for j in range(3):
+            v = vals.get(f"안쪽_{i + 1}행{j + 1}열", np.nan)
+            x = start + j * cell
+            y = start + (2 - i) * cell
+            ax.add_patch(Rectangle((x, y), cell, cell, facecolor=color(v),
+                                   edgecolor="black", lw=1))
+            ax.text(x + cell / 2, y + cell / 2, label(v), ha="center",
+                    va="center", fontsize=10, fontweight="bold")
+
+    ax.set_xlim(0, 4)
+    ax.set_ylim(0, 4)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title + "\n(투수 시점)", fontsize=13)
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=colormap)
+    fig.colorbar(sm, ax=ax, fraction=0.04, pad=0.02)
+    fig.tight_layout()
+    return fig
+
+
+def draw_field_chart(df):
+    vals = {r["방향"]: to_number(r["비율"]) for _, r in df.iterrows()}
+    left, center, right = (vals.get(k, 0) for k in ("레프트", "센터", "라이트"))
+    top = max(left, center, right)
+    norm = plt.Normalize(0, top * 1.2 if top > 0 else 1)
+    cmap = plt.get_cmap("YlOrRd")
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    for name, a1, a2, v in [("레프트", 105, 135, left), ("센터", 75, 105, center),
+                            ("라이트", 45, 75, right)]:
+        ax.add_patch(Wedge((0, 0), 10, a1, a2, facecolor=cmap(norm(v)),
+                           edgecolor="white", lw=2))
+        mid = np.deg2rad((a1 + a2) / 2)
+        ax.text(6.5 * np.cos(mid), 6.5 * np.sin(mid), f"{name}\n{v:.1f}%",
+                ha="center", va="center", fontsize=12, fontweight="bold")
+    ax.plot(0, 0, "ko", markersize=8)
+    ax.set_xlim(-8, 8)
+    ax.set_ylim(-1, 10.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title("타구 분포도", fontsize=13)
+    fig.tight_layout()
+    return fig
+
+
+def draw_donut(df, title):
+    d = df.copy()
+    pct = d["비율"].apply(to_number)
+    val = d["값"].apply(to_number)
+    sizes = pct if pct.notna().any() and pct.sum() > 0 else val
+    mask = sizes.notna() & (sizes > 0)
+    if not mask.any():
+        return None
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.pie(
+        sizes[mask],
+        labels=d["항목"][mask],
+        autopct="%1.1f%%",
+        startangle=90,
+        counterclock=False,
+        wedgeprops=dict(width=0.4, edgecolor="white"),
+        textprops=dict(fontsize=10),
+    )
+    ax.set_title(title, fontsize=13)
+    fig.tight_layout()
+    return fig
+
+
+def season_df(tables):
+    for name, df in tables.items():
+        if name.startswith("경기별_"):
+            continue
+        if "시즌" in df.columns and len(df.columns) > 3:
+            d = df[df["시즌"].astype(str).str.isdigit()].copy()
+            if d.empty:
+                continue
+            d["시즌"] = d["시즌"].astype(int)
+            return d.sort_values("시즌")
+    return None
+
+
+def default_metrics(cols):
+    for group in (["타율", "출루율", "장타율"], ["평균자책점", "WHIP"], ["평균자책점"]):
+        picked = [c for c in group if c in cols]
+        if picked:
+            return picked
+    return cols[:2]
+
+
+def draw_season_trend(d, metrics, title):
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for m in metrics:
+        ax.plot(d["시즌"], d[m].apply(to_number), marker="o", label=m)
+    ax.set_xticks(d["시즌"])
+    ax.tick_params(axis="x", rotation=45)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
+
+
+def draw_compare(players, metric):
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    for pname, tables in players.items():
+        d = season_df(tables)
+        if d is not None and metric in d.columns:
+            ax.plot(d["시즌"], d[metric].apply(to_number), marker="o", label=pname)
+    ax.set_xlabel("시즌")
+    ax.set_ylabel(metric)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    ax.set_title(f"선수별 {metric} 비교")
+    fig.tight_layout()
+    return fig
+
+
+def draw_vs_team(df, title):
+    d = df.copy()
+    d["값"] = d["값"].apply(to_number)
+    d = d.dropna(subset=["값"]).sort_values("값", ascending=False)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    bars = ax.bar(d["팀"], d["값"], color="#77a4f0")
+    ax.bar_label(bars, fmt="%.3f")
+    ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def find_table(tables, keyword):
+    for name, df in tables.items():
+        if keyword in name and not name.startswith("경기별_"):
+            return df
+    return None
+
+
+# ---------------------------------------------------------------
+# 4) 입력 화면 (HTML 업로드 전용)
+# ---------------------------------------------------------------
+if "players" not in st.session_state:
+    st.session_state["players"] = {}
+
+
+def add_player(name, tables):
+    players = st.session_state["players"]
+    key, n = name, 2
+    while key in players:
+        key = f"{name}({n})"
+        n += 1
+    players[key] = tables
+
+
+st.title("⚾ 네이버 선수 기록 분석기 (타자 · 투수)")
+st.caption("학습용 프로젝트입니다. 네이버 스포츠 선수 기록 페이지를 '다른 이름으로 저장'한 HTML을 올려주세요.")
+
+with st.expander("HTML 저장 방법"):
+    st.markdown(
+        "1. 크롬으로 선수 기록 페이지를 열고 **끝까지 스크롤**해서 모든 내용이 보이게 합니다.\n"
+        "2. `Ctrl+S` → 형식 **'웹페이지, 전체'** 로 저장합니다.\n"
+        "3. 저장된 `.html` 파일을 아래에 올립니다. (여러 선수 동시 선택 가능)"
+    )
+
+ups = st.file_uploader(
+    "저장한 .html 파일 (여러 개 선택 가능)",
+    type=["html", "htm"],
+    accept_multiple_files=True,
+)
+if ups and st.button("분석하기", type="primary"):
+    for up in ups:
+        html = up.read().decode("utf-8", errors="ignore")
+        pname, tables = parse_html(html)
+        add_player(pname, tables)
+        st.success(f"{pname} 선수 추가 완료 ({len(tables)}개 항목)")
+
+if st.session_state["players"]:
+    if st.button("선수 목록 모두 지우기"):
+        st.session_state["players"] = {}
+        st.rerun()
+
+
+# ---------------------------------------------------------------
+# 5) 결과 화면
+# ---------------------------------------------------------------
+players = st.session_state["players"]
+
+if players:
+    st.info("분석된 선수: " + ", ".join(players.keys()))
+
+    tab_one, tab_cmp, tab_table = st.tabs(["📈 선수별 그래프", "🆚 선수 비교", "📄 표 / CSV"])
+
+    with tab_one:
+        pname = st.selectbox("선수 선택", list(players.keys()))
+        tables = players[pname]
+        shown = False
+
+        hot = find_table(tables, "HOT")
+        ks = find_table(tables, "삼진")
+        if hot is not None or ks is not None:
+            c1, c2 = st.columns(2)
+            with c1:
+                if hot is not None:
+                    fig = draw_zone_heatmap(hot, f"{pname} HOT & COLD ZONE (타율)",
+                                            cmap="coolwarm", fmt="{:.3f}")
+                    if fig:
+                        st.pyplot(fig)
+                        shown = True
+            with c2:
+                if ks is not None:
+                    fig = draw_zone_heatmap(ks, f"{pname} 삼진 분포도 (%)",
+                                            cmap="Reds", fmt="{:.1f}%")
+                    if fig:
+                        st.pyplot(fig)
+                        shown = True
+
+        ground = find_table(tables, "타구")
+        if ground is not None:
+            st.pyplot(draw_field_chart(ground))
+            shown = True
+
+        donut_items = [(n, df) for n, df in tables.items() if "비율_" in n]
+        if donut_items:
+            st.subheader("비율 차트 (구종 등)")
+            cols = st.columns(2)
+            for i, (n, df) in enumerate(donut_items):
+                title = n.split("_", 2)[-1]
+                fig = draw_donut(df, f"{pname} {title}")
+                if fig:
+                    with cols[i % 2]:
+                        st.pyplot(fig)
+                        shown = True
+
+        vs = find_table(tables, "VS팀")
+        if vs is not None and not vs.empty:
+            st.pyplot(draw_vs_team(vs, f"{pname} 팀별 기록"))
+            shown = True
+
+        d = season_df(tables)
+        if d is not None:
+            st.subheader("시즌별 기록 추이")
+            cols_ = [c for c in d.columns if c != "시즌"]
+            chosen = st.multiselect("항목 선택", cols_,
+                                    default=default_metrics(cols_), key=f"trend_{pname}")
+            if chosen:
+                st.pyplot(draw_season_trend(d, chosen, f"{pname} 시즌별 기록"))
+                shown = True
+
+        if not shown:
+            st.warning("그래프로 그릴 데이터를 찾지 못했어요. '표 / CSV' 탭을 확인해 보세요.")
+
+    with tab_cmp:
+        if len(players) < 2:
+            st.write("선수를 2명 이상 추가하면 비교할 수 있어요.")
         else:
-            show_pitcher(df, key, demo, grid, team, player)
-    except Exception as e:  # 그림 하나가 실패해도 앱 전체가 멈추지 않게
-        st.error(f"이 선수의 그림을 만들지 못했어요: {e}")
-        with st.expander("자세한 오류"):
-            st.exception(e)
+            common = None
+            for t in players.values():
+                d = season_df(t)
+                if d is not None:
+                    cols_ = set(c for c in d.columns if c != "시즌")
+                    common = cols_ if common is None else common & cols_
+            if common:
+                pref = ["타율", "OPS", "홈런", "타점", "평균자책점", "WHIP", "탈삼진", "WAR"]
+                order = [c for c in pref if c in common] + sorted(common - set(pref))
+                metric = st.selectbox("비교할 항목", order)
+                st.pyplot(draw_compare(players, metric))
+            else:
+                st.warning("공통 항목이 없어요. 타자끼리, 투수끼리 비교해 보세요.")
 
-
-def tab_summary(df, key, grid, iso):
-    bt, pt = tables(key, df, grid, iso)
-    st.subheader("타자")
-    if bt.empty:
-        st.info("표시할 타자 데이터가 없어요.")
-    else:
-        st.dataframe(bt, hide_index=True)
-        st.download_button("타자 요약 CSV 내려받기", bt.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="batter_summary.csv", mime="text/csv", key="dl_b")
-    st.subheader("투수")
-    if pt.empty:
-        st.info("표시할 투수 데이터가 없어요.")
-    else:
-        st.dataframe(pt, hide_index=True)
-        st.download_button("투수 요약 CSV 내려받기", pt.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="pitcher_summary.csv", mime="text/csv", key="dl_p")
-
-
-def tab_classify(df, key, demo):
-    st.markdown(
-        "투구가 홈플레이트를 지날 때의 **위치와 구종**만 보고 **스트라이크 / 볼**을 맞히는 **분류 모델**을 학습해요. "
-        "정답(라벨)은 `is_strike`이고, 학습에 쓰지 않은 **테스트 데이터**로만 성능을 평가해요.")
-    if st.button("분류 모델 학습하기", key="train"):
-        st.session_state["cls_ready"] = key
-    if st.session_state.get("cls_ready") != key:
-        st.info("버튼을 누르면 5개 모델(기준선, 로지스틱 회귀 2종, 결정트리, 랜덤포레스트)을 학습하고 비교해요.")
-        return
-    try:
-        result = classification(key, df)
-        eval_png, map_png, report = classification_outputs(key, result, demo)
-    except ValueError as e:      # 데이터가 너무 적거나 정답이 한 가지뿐인 경우 등
-        st.error(f"분류를 할 수 없어요: {e}")
-        return
-    except Exception as e:
-        st.error(f"분류 중 오류가 났어요: {e}")
-        with st.expander("자세한 오류"):
-            st.exception(e)
-        return
-    b = result.metrics.loc[result.best_name]
-    cols = st.columns(4)
-    cols[0].metric("최고 모델", result.best_name)
-    cols[1].metric("정확도", f"{b['정확도']:.3f}", f"기준선 대비 {b['정확도'] - result.baseline_accuracy:+.3f}")
-    cols[2].metric("ROC-AUC", f"{b['ROC-AUC']:.3f}")
-    cols[3].metric("테스트 투구 수", f"{result.n_test:,}")
-    if b["정확도"] <= result.baseline_accuracy:
-        st.warning("최고 모델이 기준선(항상 다수 범주를 찍는 모델)보다 낫지 않아요. 의미 있게 학습하지 못한 거예요.")
-    st.subheader("모델 비교 (테스트 데이터)")
-    st.dataframe(result.metrics.round(3))
-    st.image(eval_png)
-    st.image(map_png)
-    st.download_button("분류 결과 보고서(.md) 내려받기", report.encode("utf-8"),
-                       file_name="classification_report.md", mime="text/markdown", key="dl_report")
-
-
-def tab_help():
-    st.markdown(
-        """
-**데이터 형식 (투구 1개 = 1행)**
-
-| 컬럼 | 설명 |
-|---|---|
-| `pitcher`, `batter` | 투수·타자 이름 (`data/players.json`과 글자까지 같아야 함) |
-| `pitch_type` | `직구` / `변화구` (FF, SL, 슬라이더, 커브 등도 자동 분류) |
-| `plate_x`, `plate_z` | 홈플레이트 통과 위치(ft). 포수 시점, 오른쪽이 +. 없으면 `zone`(A1~E5) 사용 |
-| `is_strike` | 스트라이크 1, 볼 0 (루킹·헛스윙·파울 포함) |
-| `pa_result` | 그 투구로 타석이 끝났을 때만 `1루타/2루타/3루타/홈런/아웃/삼진/볼넷…`, 아니면 빈칸 |
-
-CSV는 UTF-8과 CP949(엑셀 한글 저장)를 모두 읽어요. 구종을 알 수 없거나 위치가 빈 행은 자동으로 건너뜁니다.
-"""
-    )
-    if TEMPLATE_PATH.exists():
-        st.download_button("CSV 예시 파일 받기", TEMPLATE_PATH.read_bytes(),
-                           file_name="pitches_template.csv", mime="text/csv", key="dl_t")
-    st.markdown(
-        f"""
-**지표 기준**
-- 장타형: ISO(장타율−타율) ≥ 사이드바 값 (기본 {C.ISO_THRESHOLD}, 임의 기준이니 조정하세요)
-- 강한/약한 존: 칸당 타수 {C.MIN_AB_BEST} 이상인 칸 중 최고/최저 타율
-- 잘 넣는 존: 칸당 {C.MIN_PITCH_BEST}구 이상인 칸 중 스트라이크율 최고
-- 좌표는 포수 시점이며 좌/우타자는 구분하지 않아요.
-"""
-    )
-
-
-def main():
-    df, key, demo, grid, iso, team, role = sidebar()
-    st.image(hero(demo))
-    if demo:
-        st.warning("**DEMO DATA** — 지금 보이는 모든 수치와 히트맵은 가짜 데이터로 만든 예시예요. "
-                   "실제 선수의 기록이 아닙니다. 왼쪽에서 '내 CSV 업로드'를 선택해 실제 투구 데이터를 올리세요.")
-    t1, t2, t3, t4 = st.tabs(["선수 히트맵", "전체 요약표", "분류 모델 (스트라이크/볼)", "사용법·데이터 형식"])
-    with t1:
-        tab_players(df, key, demo, grid, iso, team, role)
-    with t2:
-        tab_summary(df, key, grid, iso)
-    with t3:
-        tab_classify(df, key, demo)
-    with t4:
-        tab_help()
-    st.caption("KBO와 무관한 비공식 학습용 프로젝트 · 잠실야구장 배경은 필드 구조를 형상화한 일러스트입니다.")
-
-
-main()
+    with tab_table:
+        st.download_button(
+            "⬇️ 전체 선수 CSV 묶음(ZIP) 다운로드",
+            data=make_zip(players),
+            file_name="players_records.zip",
+            mime="application/zip",
+        )
+        st.divider()
+        for pname, tables in players.items():
+            with st.expander(f"{pname} 표 보기", expanded=False):
+                for name, df in tables.items():
+                    st.subheader(name)
+                    st.dataframe(df, use_container_width=True)
+                    st.download_button(
+                        f"⬇️ {name}.csv",
+                        data=to_csv_bytes(df),
+                        file_name=f"{safe_name(pname)}_{safe_name(name)}.csv",
+                        mime="text/csv",
+                        key=f"dl_{pname}_{name}",
+                    )
