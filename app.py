@@ -553,8 +553,7 @@ if query:
             if p["비고"]:
                 st.caption("※ " + p["비고"])
             if not is_pitcher:
-                st.caption("※ 값의 크기가 많이 다른 항목을 같이 고르
-                st.caption("※ 값의 크기가 많이 다른 항목을 같이 고르면 한쪽이 납작해 보여요.")
+                               st.caption("※ 값의 크기가 많이 다른 항목을 같이 고르면 한쪽이 납작해 보여요.")
 
         with tab4:
             st.dataframe(df, use_container_width=True)
