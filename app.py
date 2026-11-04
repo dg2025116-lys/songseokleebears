@@ -554,3 +554,24 @@ if query:
                 st.caption("※ " + p["비고"])
             if not is_pitcher:
                 st.caption("※ 값의 크기가 많이 다른 항목을 같이 고르
+                st.caption("※ 값의 크기가 많이 다른 항목을 같이 고르면 한쪽이 납작해 보여요.")
+
+        with tab4:
+            st.dataframe(df, use_container_width=True)
+            st.download_button("⬇️ 시즌 기록 CSV", df.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"{name}_시즌기록.csv", mime="text/csv")
+
+st.divider()
+st.subheader("🆚 선수 비교")
+sel = st.multiselect("비교할 선수", list(PLAYERS.keys()), default=["구자욱", "김도영", "오스틴 딘"])
+if sel:
+    common = None
+    for n in sel:
+        cols_ = set(PLAYERS[n]["시즌기록"].columns) - {"시즌"}
+        common = cols_ if common is None else common & cols_
+    common = sorted(common)
+    if common:
+        metric = st.selectbox("항목", common, index=common.index("WAR") if "WAR" in common else 0)
+        st.pyplot(compare_chart(sel, metric))
+    else:
+        st.info("선택한 선수들의 공통 항목이 없어요. 타자끼리, 투수끼리 비교하거나 WAR 같은 공통 항목을 이용하세요.")
