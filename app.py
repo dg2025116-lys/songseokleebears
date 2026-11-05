@@ -1,3 +1,13 @@
+import base64
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from matplotlib.patches import Rectangle, Wedge
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -478,6 +488,7 @@ def compare_chart(names, metric):
 # ===============================================================
 # 화면
 # ===============================================================
+set_background()
 st.title("⚾ KBO 선수 기록실")
 st.caption("선수 이름을 입력하면 등록된 실제 기록을 그래프로 보여줍니다. (데이터 출처: 네이버 스포츠 선수 기록 페이지)")
 
