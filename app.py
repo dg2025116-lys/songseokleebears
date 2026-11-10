@@ -1,6 +1,7 @@
 # ===============================================================
 # 🤖 군집 모델 평가 및 선택
 # ===============================================================
+import streamlit as st
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import (calinski_harabasz_score, davies_bouldin_score,
