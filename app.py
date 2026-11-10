@@ -402,7 +402,7 @@ def compare_chart(names, metric):
 
 
 # ===============================================================
-# 화면
+# 화면 (선수 기록실)
 # ===============================================================
 set_background()
 st.title("⚾ KBO 선수 기록실")
@@ -506,10 +506,6 @@ if sel:
 # ===============================================================
 # 🤖 군집 모델 평가 및 선택
 # ===============================================================
-st.divider()
-st.header("🤖 군집 모델 평가 및 선택")
-st.caption("선수-시즌 기록을 비슷한 유형끼리 묶는 군집 모델 3가지를 비교하고, 가장 적합한 모델을 선택해 보세요.")
-
 MODEL_NAMES = ["K-Means", "계층적 군집", "가우시안 혼합(GMM)"]
 
 
@@ -538,7 +534,13 @@ def fit_labels(model_name, X, k, linkage="ward", cov_type="full"):
 
 
 def run_clustering_section():
+    st.divider()
+    st.header("🤖 군집 모델 평가 및 선택")
+    st.caption("선수-시즌 기록을 비슷한 유형끼리 묶는 군집 모델 3가지를 비교하고, "
+               "가장 적합한 모델을 선택해 보세요.")
+
+    # ---------- 설정 ----------
     left, _ = st.columns([1, 2])
     with left:
         ptype = st.radio("분석 대상", ["타자", "투수"], horizontal=True, key="cl_type")
-        cdata = build_cluster_data(ptype)
+        cdata = build_cluster_
