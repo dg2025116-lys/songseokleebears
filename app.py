@@ -508,7 +508,7 @@ if sel:
 
 
 # ===============================================================
-# 🤖 군집 모델 평가 및 선택 (Plotly 버전, 이 블록은 파일에 한 번만!)
+# 🤖 군집 모델 평가 및 선택 (Plotly 버전)
 # ===============================================================
 MODEL_NAMES = ["K-Means", "계층적 군집", "가우시안 혼합(GMM)"]
 MODEL_COLORS = {"K-Means": "#636EFA", "계층적 군집": "#EF553B",
@@ -517,6 +517,7 @@ MODEL_COLORS = {"K-Means": "#636EFA", "계층적 군집": "#EF553B",
 
 @st.cache_data
 def build_cluster_data(player_type):
+    """선수 유형(타자/투수)별로 '선수-시즌' 한 행짜리 데이터프레임을 만든다."""
     frames = []
     for n, info in PLAYERS.items():
         if info["유형"] != player_type:
@@ -539,6 +540,7 @@ def fit_labels(model_name, X, k, linkage="ward", cov_type="full"):
 
 
 def metric_figure(res):
+    """3개 평가 지표를 한 화면에 나란히 보여주는 Plotly 그래프"""
     metrics = ["실루엣(↑)", "Davies-Bouldin(↓)", "Calinski-Harabasz(↑)"]
     fig = make_subplots(rows=1, cols=3, subplot_titles=metrics)
     for i, m in enumerate(metrics, start=1):
@@ -564,4 +566,164 @@ def pca_figure(cdata, X, labels, title):
                             "군집": [f"군집 {g}" for g in labels],
                             "라벨": cdata["라벨"]})
     plot_df = plot_df.sort_values("군집")
-    fig = px.scatter(plot_df, x="PC1", y="PC2
+    fig = px.scatter(plot_df, x="PC1", y="PC2", color="군집", hover_name="라벨",
+                     text="라벨" if len(plot_df) <= 40 else None,
+                     template="plotly_white")
+    fig.update_traces(marker=dict(size=13, line=dict(width=1, color="white")),
+                      textposition="top center", textfont=dict(size=10))
+    fig.update_layout(
+        title=title, height=550,
+        xaxis_title=f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)",
+        yaxis_title=f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
+    return fig
+
+
+def profile_heatmap(cdata, features, labels):
+    """군집별 평균(표준화 값)을 히트맵으로 표시: 빨강=평균보다 높음, 파랑=낮음"""
+    z = pd.DataFrame(StandardScaler().fit_transform(cdata[features]),
+                     columns=features)
+    z["군집"] = [f"군집 {g}" for g in labels]
+    prof = z.groupby("군집")[features].mean()
+    fig = px.imshow(prof, text_auto=".2f", aspect="auto",
+                    color_continuous_scale="RdBu_r", zmin=-2, zmax=2,
+                    labels=dict(color="표준화 평균"))
+    fig.update_layout(height=120 + 70 * len(prof), template="plotly_white",
+                      title="군집별 특성 프로필 (전체 평균 대비)")
+    return fig
+
+
+def run_clustering_section():
+    st.divider()
+    st.header("🤖 군집 모델 평가 및 선택")
+    st.caption("선수-시즌 기록을 비슷한 유형끼리 묶는 군집 모델 3가지를 비교하고, "
+               "가장 적합한 모델을 선택해 보세요.")
+
+    # ---------- 설정 ----------
+    left, _ = st.columns([1, 2])
+    with left:
+        ptype = st.radio("분석 대상", ["타자", "투수"], horizontal=True, key="cl_type")
+        cdata = build_cluster_data(ptype)
+
+        drop_zero = st.checkbox("WAR·wRC+ 등이 0인(원본 결측 의심) 행 제외", value=True,
+                                key="cl_drop_zero")
+        if drop_zero:
+            if ptype == "타자":
+                cdata = cdata[(cdata["wRC+"] > 0) & (cdata["경기수"] >= 30)]
+            else:
+                cdata = cdata[(cdata["WAR"] != 0) & (cdata["K/9"] > 0)]
+        cdata = cdata.reset_index(drop=True)
+
+        num_cols = [c_ for c_ in cdata.columns if c_ not in ("선수", "시즌", "라벨")]
+        default_feat = (["타율", "출루율", "장타율", "홈런", "도루", "WAR"]
+                        if ptype == "타자"
+                        else ["평균자책", "WHIP", "K/9", "BB/9", "WAR"])
+        features = st.multiselect("군집에 사용할 특성", num_cols, default=default_feat,
+                                  key=f"cl_feat_{ptype}")
+        k_range = st.slider("탐색할 군집 수(K) 범위", 2, 8, (2, 6), key="cl_k_range")
+        k_final = st.slider("최종 확인할 군집 수(K)", 2, 8, 3, key="cl_k_final")
+
+    if len(features) < 2:
+        st.info("특성을 2개 이상 선택하세요.")
+        return
+    if len(cdata) <= max(k_range[1], k_final):
+        st.warning("데이터 수가 너무 적어요. K 범위를 줄이거나 제외 옵션을 해제해 보세요.")
+        return
+
+    X = StandardScaler().fit_transform(cdata[features])
+    st.write(f"사용 데이터: **{len(cdata)}행** (선수-시즌), 특성 **{len(features)}개** (표준화 적용)")
+
+    # ---------- 1) 모델별 평가 ----------
+    st.subheader("1️⃣ 모델별 성능 비교")
+    rows = []
+    for mname in MODEL_NAMES:
+        for k in range(k_range[0], k_range[1] + 1):
+            try:
+                lab = fit_labels(mname, X, k)
+                if len(set(lab)) < 2:
+                    continue
+                rows.append({
+                    "모델": mname, "K": k,
+                    "실루엣(↑)": silhouette_score(X, lab),
+                    "Davies-Bouldin(↓)": davies_bouldin_score(X, lab),
+                    "Calinski-Harabasz(↑)": calinski_harabasz_score(X, lab),
+                })
+            except Exception:
+                continue
+    res = pd.DataFrame(rows)
+    if res.empty:
+        st.error("평가 결과를 계산하지 못했어요. 설정을 바꿔 보세요.")
+        return
+
+    st.plotly_chart(metric_figure(res), use_container_width=True)
+    with st.expander("📋 평가 점수 표 보기"):
+        st.dataframe(
+            res.style.format({"실루엣(↑)": "{:.3f}", "Davies-Bouldin(↓)": "{:.3f}",
+                              "Calinski-Harabasz(↑)": "{:.1f}"}),
+            use_container_width=True)
+
+    best = res.sort_values("실루엣(↑)", ascending=False).iloc[0]
+    st.success(f"📌 실루엣 계수 기준 추천: **{best['모델']} (K={int(best['K'])})**, "
+               f"실루엣 = {best['실루엣(↑)']:.3f}")
+    st.caption("※ 지표마다 '좋다'고 하는 모델이 다를 수 있어요. 시각화와 군집의 의미까지 함께 판단해 보세요.")
+
+    # ---------- 2) 모델 선택 & 시각화 ----------
+    st.subheader("2️⃣ 모델 선택 및 군집 확인")
+    chosen_model = st.selectbox("사용할 모델 선택", MODEL_NAMES, key="cl_model")
+    linkage, cov_type = "ward", "full"
+    if chosen_model == "계층적 군집":
+        linkage = st.selectbox("연결 방식(linkage)", ["ward", "complete", "average"],
+                               key="cl_linkage")
+    if chosen_model == "가우시안 혼합(GMM)":
+        cov_type = st.selectbox("공분산 유형", ["full", "tied", "diag", "spherical"],
+                                key="cl_cov")
+
+    labels = fit_labels(chosen_model, X, k_final, linkage, cov_type)
+    cdata["군집"] = labels
+
+    if len(set(labels)) > 1:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("실루엣", f"{silhouette_score(X, labels):.3f}")
+        m2.metric("Davies-Bouldin", f"{davies_bouldin_score(X, labels):.3f}")
+        m3.metric("Calinski-Harabasz", f"{calinski_harabasz_score(X, labels):.1f}")
+
+    st.plotly_chart(
+        pca_figure(cdata, X, labels, f"{chosen_model} (K={k_final}) 군집 결과 - PCA 2차원"),
+        use_container_width=True)
+
+    st.plotly_chart(profile_heatmap(cdata, features, labels), use_container_width=True)
+
+    st.markdown("**군집별 특성 평균 (원래 단위)**")
+    profile = cdata.groupby("군집")[features].mean()
+    profile["데이터 수"] = cdata.groupby("군집").size()
+    st.dataframe(profile.style.format("{:.3f}", subset=features), use_container_width=True)
+
+    with st.expander("군집별 구성원 보기"):
+        for g in sorted(cdata["군집"].unique()):
+            members = cdata.loc[cdata["군집"] == g, "라벨"].tolist()
+            st.write(f"**군집 {g}** ({len(members)}개): " + ", ".join(members))
+
+    if chosen_model == "계층적 군집":
+        dendro = ff.create_dendrogram(
+            X, labels=cdata["라벨"].tolist(),
+            linkagefun=lambda x: sch_linkage(x, method=linkage))
+        dendro.update_layout(height=500, title="덴드로그램", template="plotly_white",
+                             margin=dict(b=140))
+        st.plotly_chart(dendro, use_container_width=True)
+
+    # ---------- 3) 최종 선택 ----------
+    st.subheader("3️⃣ 최종 모델 확정")
+    if st.button("✅ 이 모델로 확정하기", key="cl_confirm"):
+        st.session_state["final_cluster_model"] = {
+            "대상": ptype, "모델": chosen_model, "K": k_final, "특성": features}
+    if "final_cluster_model" in st.session_state:
+        f = st.session_state["final_cluster_model"]
+        st.success(f"확정된 모델: [{f['대상']}] {f['모델']} / K={f['K']} / "
+                   f"특성: {', '.join(f['특성'])}")
+
+    st.download_button("⬇️ 군집 결과 CSV", cdata.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"{ptype}_군집결과.csv", mime="text/csv",
+                       key="cl_download")
+
+
+# 반드시 마지막에, 딱 한 번만 호출해야 합니다!
+run_clustering_section()
