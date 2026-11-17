@@ -592,6 +592,70 @@ def profile_heatmap(cdata, features, labels):
     return fig
 
 
+def style_kmeans_section(cdata, num_cols):
+    """타자 전용: 장타형 · 교타형 · 출루형 기준 K-Means"""
+    st.subheader("2️⃣-2 스타일 기준 K-Means (장타형 · 교타형 · 출루형)")
+    st.caption("기준이 되는 선수-시즌을 직접 골라 K-Means의 시작 중심으로 사용합니다.")
+    style_feat = st.multiselect(
+        "스타일 특성 (WAR는 빼는 것을 추천)",
+        num_cols, default=["타율", "홈런", "IsoP", "도루", "볼넷", "출루율"],
+        key="style_feat")
+    labels_list = cdata["라벨"].tolist()
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        power_ref = st.selectbox("장타형 기준 선수-시즌", labels_list,
+                                 key="style_power")
+    with s2:
+        contact_ref = st.selectbox("교타형 기준 선수-시즌", labels_list,
+                                   index=min(1, len(labels_list) - 1),
+                                   key="style_contact")
+    with s3:
+        onbase_ref = st.selectbox("출루형 기준 선수-시즌", labels_list,
+                                  index=min(2, len(labels_list) - 1),
+                                  key="style_onbase")
+
+    refs = [power_ref, contact_ref, onbase_ref]
+    if len(style_feat) < 2 or len(set(refs)) < 3:
+        st.info("특성을 2개 이상 고르고, 세 기준 선수-시즌을 서로 다르게 선택하세요.")
+        return
+
+    Xs = StandardScaler().fit_transform(cdata[style_feat])
+    init_centers = np.array([Xs[labels_list.index(r)] for r in refs])
+    km = KMeans(n_clusters=3, init=init_centers, n_init=1, random_state=42)
+    lab3 = km.fit_predict(Xs)
+
+    # 0번=장타형, 1번=교타형, 2번=출루형 (시작 중심 순서)
+    name_map = {0: "장타형", 1: "교타형", 2: "출루형"}
+    cdata["스타일"] = [name_map[g] for g in lab3]
+
+    if len(set(lab3)) > 1:
+        st.metric("실루엣", f"{silhouette_score(Xs, lab3):.3f}")
+
+    pca3 = PCA(n_components=2, random_state=42)
+    pts3 = pca3.fit_transform(Xs)
+    plot3 = pd.DataFrame({"PC1": pts3[:, 0], "PC2": pts3[:, 1],
+                          "스타일": cdata["스타일"],
+                          "라벨": cdata["라벨"]})
+    fig_s = px.scatter(plot3, x="PC1", y="PC2", color="스타일",
+                       hover_name="라벨",
+                       text="라벨" if len(plot3) <= 40 else None,
+                       template="plotly_white")
+    fig_s.update_traces(marker=dict(size=13, line=dict(width=1, color="white")),
+                        textposition="top center", textfont=dict(size=10))
+    fig_s.update_layout(height=550, title="장타형 · 교타형 · 출루형 (PCA 2차원)")
+    st.plotly_chart(fig_s, use_container_width=True)
+
+    prof3 = cdata.groupby("스타일")[style_feat].mean()
+    prof3["데이터 수"] = cdata.groupby("스타일").size()
+    st.dataframe(prof3.style.format("{:.3f}", subset=style_feat),
+                 use_container_width=True)
+
+    with st.expander("스타일별 구성원 보기"):
+        for g in ["장타형", "교타형", "출루형"]:
+            mem = cdata.loc[cdata["스타일"] == g, "라벨"].tolist()
+            st.write(f"**{g}** ({len(mem)}개): " + ", ".join(mem))
+
+
 def run_clustering_section():
     st.divider()
     st.header("🤖 군집 모델 평가 및 선택")
@@ -710,6 +774,10 @@ def run_clustering_section():
                              margin=dict(b=140))
         st.plotly_chart(dendro, use_container_width=True)
 
+    # ---------- 2-2) 스타일 기준 K-Means (타자 전용) ----------
+    if ptype == "타자":
+        style_kmeans_section(cdata, num_cols)
+
     # ---------- 3) 최종 선택 ----------
     st.subheader("3️⃣ 최종 모델 확정")
     if st.button("✅ 이 모델로 확정하기", key="cl_confirm"):
@@ -723,6 +791,10 @@ def run_clustering_section():
     st.download_button("⬇️ 군집 결과 CSV", cdata.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"{ptype}_군집결과.csv", mime="text/csv",
                        key="cl_download")
+
+
+# 반드시 마지막에, 딱 한 번만 호출해야 합니다!
+run_clustering_section()
 
 
 # 반드시 마지막에, 딱 한 번만 호출해야 합니다!
